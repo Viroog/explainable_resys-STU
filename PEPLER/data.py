@@ -118,12 +118,18 @@ class Batchify:
         # 将评论一起进行tokenizer，并进行填充，并以pytorh的张量返回
         encoded_inputs = tokenizer(text, padding=True, return_tensors='pt')
         # contiguous()保证张量是连续存储的
-        self.seq = encoded_inputs['input_ids'].contiguous()
-        # 这里的attention_mask是用来mask在tokenize过程中padding的位置，保证在计算attention score时被忽略掉
-        self.attention_mask = encoded_inputs['attention_mask'].contiguous()
-        self.user = torch.LongTensor(user).contiguous()
-        self.item = torch.LongTensor(item).contiguous()
-        self.rating = torch.LongTensor(rating).contiguous()
+        # self.seq = encoded_inputs['input_ids'].contiguous()
+        # # 这里的attention_mask是用来mask在tokenize过程中padding的位置，保证在计算attention score时被忽略掉
+        # self.attention_mask = encoded_inputs['attention_mask'].contiguous()
+        # self.user = torch.LongTensor(user).contiguous()
+        # self.item = torch.LongTensor(item).contiguous()
+        # self.rating = torch.LongTensor(rating).contiguous()
+
+        self.seq = encoded_inputs['input_ids']
+        self.attention_mask = encoded_inputs['attention_mask']
+        self.user = torch.LongTensor(user)
+        self.item = torch.LongTensor(item)
+        self.rating = torch.LongTensor(rating)
 
         # 总的数据条数
         self.sample_num = len(data)

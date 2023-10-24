@@ -29,13 +29,16 @@ class ContinuousPromptWithMF(nn.Module):
     # type: # tensor in cpu
     # 根据transformer文档，label设置为100的会被忽略掉
     def forward(self, user, item, seq, attention_mask, ignore_index=-100):
+
+        # batch_size应该为传进来的数据的大小而不是args中的batch_size，否则会出现大小不匹配的情况
+        batch_size = user.shape[0]
+
         # (batch_size, d)
         user_embed = self.user_embed(user.to(self.args.device))
         # (batch_size, d)
         item_embed = self.item_embed(item.to(self.args.device))
         # (batch_size, 24, d)
         word_embed = self.gpt2.transformer.wte(seq.to(self.args.device))
-        print(torch.min(seq), torch.max(seq))
 
         # (batch_size, d) --> (batch_size, 1, d)
         # shape: (batch_size, 26, d)
@@ -56,7 +59,7 @@ class ContinuousPromptWithMF(nn.Module):
 
         # user & item对应的label, 产生由ignore_index填充的tensor
         # shape: (batch_size, 2)
-        left_label = torch.full((self.args.batch_size, 2), ignore_index, dtype=torch.int64)
+        left_label = torch.full((batch_size, 2), ignore_index, dtype=torch.int64)
         # token对应的label
         # shape: (batch_size, 24)
         right_label = torch.where(attention_mask != 0, seq, torch.tensor(ignore_index, dtype=torch.int64))

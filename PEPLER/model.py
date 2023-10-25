@@ -28,7 +28,7 @@ class ContinuousPromptWithMF(nn.Module):
 
     # type: # tensor in cpu
     # 根据transformer文档，label设置为100的会被忽略掉
-    def forward(self, user, item, seq, attention_mask, ignore_index=-100):
+    def forward(self, user, item, seq, attention_mask, predict_rating=True, ignore_index=-100):
 
         # batch_size应该为传进来的数据的大小而不是args中的batch_size，否则会出现大小不匹配的情况
         batch_size = user.shape[0]
@@ -44,29 +44,40 @@ class ContinuousPromptWithMF(nn.Module):
         # shape: (batch_size, 26, d)
         inputs_embed = torch.cat([user_embed.unsqueeze(1), item_embed.unsqueeze(1), word_embed], dim=1)
 
-        # 先逐元素相乘，然后在最后一个维度上求和
-        rating_pred = torch.sum(user_embed * item_embed, dim=-1)
+        if predict_rating:
+            # 先逐元素相乘，然后在最后一个维度上求和
+            rating_pred = torch.sum(user_embed * item_embed, dim=-1)
+        else:
+            rating_pred = None
 
-        # mask, 在要在原本的mask基础上加上两个mask，即用户和id的mask
-        # 原来的mask shape: (batch_size, seq_len + 4)
-        # 多出的4个为两个空格+bos+eos
-        user_item_mask = torch.ones((self.args.batch_size, 2), dtype=torch.int64)
-        # 在第一维拼接
-        total_mask = torch.cat([user_item_mask, attention_mask], dim=1)
+        # 预测的时候则没有padding，不需要mask
+        if attention_mask is None:
+            text_pred = self.gpt2.forward(inputs_embeds=inputs_embed.to(self.args.device))
 
-        # label是one-hot vecotr每个输出对应一个vector，维度为token的大小 shape: (50259, )
-        # total shape: (batch_size,  ,50259)
+            return rating_pred, text_pred
 
-        # user & item对应的label, 产生由ignore_index填充的tensor
-        # shape: (batch_size, 2)
-        left_label = torch.full((batch_size, 2), ignore_index, dtype=torch.int64)
-        # token对应的label
-        # shape: (batch_size, 24)
-        right_label = torch.where(attention_mask != 0, seq, torch.tensor(ignore_index, dtype=torch.int64))
-        total_label = torch.cat([left_label, right_label], dim=1)
+        # 在训练时需要加mask，因为有padding
+        else:
+            # mask, 在原本的mask基础上加上两个mask，即用户和id的mask(但是是为1)
+            # 原来的mask shape: (batch_size, seq_len + 4)
+            # 多出的4个为两个空格+bos+eos
+            user_item_mask = torch.ones((batch_size, 2), dtype=torch.int64)
+            # 在第一维拼接
+            total_mask = torch.cat([user_item_mask, attention_mask], dim=1)
 
-        text_pred = self.gpt2.forward(attention_mask=total_mask.to(self.args.device),
-                                      inputs_embeds=inputs_embed.to(self.args.device),
-                                      labels=total_label.to(self.args.device))
+            # label是one-hot vecotr每个输出对应一个vector，维度为token的大小 shape: (50259, )
+            # total shape: (batch_size,  ,50259)
 
-        return rating_pred, text_pred
+            # user & item对应的label, 产生由ignore_index填充的tensor
+            # shape: (batch_size, 2)
+            left_label = torch.full((batch_size, 2), ignore_index, dtype=torch.int64)
+            # token对应的label
+            # shape: (batch_size, 24)
+            right_label = torch.where(attention_mask != 0, seq, torch.tensor(ignore_index, dtype=torch.int64))
+            total_label = torch.cat([left_label, right_label], dim=1)
+
+            text_pred = self.gpt2.forward(attention_mask=total_mask.to(self.args.device),
+                                          inputs_embeds=inputs_embed.to(self.args.device),
+                                          labels=total_label.to(self.args.device))
+
+            return rating_pred, text_pred

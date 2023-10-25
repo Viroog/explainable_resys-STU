@@ -9,6 +9,8 @@ from data import DataLoader, Batchify
 from model import ContinuousPromptWithMF
 import torch.optim as optim
 
+from utils import token2word
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--data_path', type=str, default='./data/reviews.pickle',
                     help='the path of data used to train model')
@@ -180,3 +182,20 @@ test_loss = evaluation(test_data)
 print(f"for test loss: {test_loss}")
 rating_pred, text_pred = test()
 
+# 去除bos
+reviews = [token2word(tokens[1:], tokenizer, eos) for tokens in test_data.seq.tolist()]
+predict_reviews = [token2word(tokens, tokenizer, eos) for tokens in text_pred]
+
+with open('reviews.txt', 'w') as f:
+    for review_list in reviews:
+        review = ''
+        for word in review_list:
+            review += word + ' '
+        f.write(review + '\n')
+
+with open('predict_reviews.txt', 'w') as f:
+    for review_list in predict_reviews:
+        review = ''
+        for word in review_list:
+            review += word + ' '
+        f.write(review + '\n')

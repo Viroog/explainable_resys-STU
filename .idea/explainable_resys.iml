@@ -5,4 +5,11 @@
     <orderEntry type="jdk" jdkName="pytorch_gpu" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
+  <component name="PyNamespacePackagesService">
+    <option name="namespacePackageFolders">
+      <list>
+        <option value="$MODULE_DIR$/KPRN" />
+      </list>
+    </option>
+  </component>
 </module>

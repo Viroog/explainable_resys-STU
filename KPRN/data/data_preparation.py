@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser(description='the parameter of file')
 parser.add_argument('--song_data', type=str, default='../song_dataset/songs.csv', help='the data to build KG')
 parser.add_argument('--interaction_data', type=str, default='../song_dataset/train.csv',
                     help='the data of what items user interact with')
-parser.add_argument('--subnetwork_type', type=str, default='dense', choices=['dense', 'standard', 'sparse', 'full'],
+parser.add_argument('--subnetwork_type', type=str, default='standard', choices=['dense', 'standard', 'sparse', 'full'],
                     help='the type of subnetwork')
 
 args = parser.parse_args()
@@ -222,8 +222,8 @@ def find_subnetwork(factor=0.1):
         song = edge[1]
         person_song_dict[person].append(song)
 
-    filename = consts.DATA_DIR + '/' + args.subnetwork_type + '_' + consts.PERSON_SONG_DICT
-    with open(filename, 'wb') as file:
+    file_path = consts.DATA_DIR + '/' + args.subnetwork_type + '_' + consts.PERSON_SONG_DICT
+    with open(file_path, 'wb') as file:
         pickle.dump(person_song_dict, file, protocol=pickle.HIGHEST_PROTOCOL)
 
     # dense_song_person.dict
@@ -233,8 +233,8 @@ def find_subnetwork(factor=0.1):
         person = edge[1]
         song_person_dict[song].append(person)
 
-    filename = consts.DATA_DIR + '/' + args.subnetwork_type + '_' + consts.SONG_PERSON_DICT
-    with open(filename, 'wb') as file:
+    file_path = consts.DATA_DIR + '/' + args.subnetwork_type + '_' + consts.SONG_PERSON_DICT
+    with open(file_path, 'wb') as file:
         pickle.dump(song_person_dict, file, protocol=pickle.HIGHEST_PROTOCOL)
 
     # dense_user_song
@@ -244,8 +244,8 @@ def find_subnetwork(factor=0.1):
         song = edge[1]
         user_song_dict[user].append(song)
 
-    filename = consts.DATA_DIR + '/' + args.subnetwork_type + '_' + consts.USER_SONG_DICT
-    with open(filename, 'wb') as file:
+    file_path = consts.DATA_DIR + '/' + args.subnetwork_type + '_' + consts.USER_SONG_DICT
+    with open(file_path, 'wb') as file:
         pickle.dump(user_song_dict, file, protocol=pickle.HIGHEST_PROTOCOL)
 
     # dense_song_user
@@ -255,8 +255,8 @@ def find_subnetwork(factor=0.1):
         user = edge[1]
         song_user_dict[song].append(user)
 
-    filename = consts.DATA_DIR + '/' + args.subnetwork_type + '_' + consts.SONG_USER_DICT
-    with open(filename, 'wb') as file:
+    file_path = consts.DATA_DIR + '/' + args.subnetwork_type + '_' + consts.SONG_USER_DICT
+    with open(file_path, 'wb') as file:
         pickle.dump(song_user_dict, file, protocol=pickle.HIGHEST_PROTOCOL)
 
 
@@ -345,6 +345,42 @@ def ix_mapping():
         pickle.dump(person_song_ix, file, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+# split the user-song interactions into 2 parts: training set 80%, test set 20%
+# specifically, for each user, take 80% song interact as training data
+def train_test_split():
+    file_path = consts.IX_DATA_DIR + '/' + args.subnetwork_type + '_ix_' + consts.USER_SONG_DICT
+    with open(file_path, 'rb') as file:
+        user_song = pickle.load(file)
+
+    train_user_song, test_user_song = {}, {}
+    # also song_user need to be splited (use defaultdict for convenience)
+    train_song_user, test_song_user = defaultdict(list), defaultdict(list)
+
+    for user in user_song.keys():
+        user_interact = user_song[user]
+        random.shuffle(user_interact)
+        train_len = int(len(user_interact) * 0.8)
+
+        train_user_song[user] = user_interact[:train_len]
+        for song in user_interact[:train_len]:
+            train_song_user[song].append(user)
+
+        test_user_song[user] = user_interact[train_len:]
+        for song in user_interact[train_len:]:
+            test_song_user[song].append(user)
+
+    prefix = consts.IX_DATA_DIR + '/' + args.subnetwork_type
+
+    with open(prefix + '_train_ix_' + consts.USER_SONG_DICT, 'wb') as file:
+        pickle.dump(train_user_song, file, protocol=pickle.HIGHEST_PROTOCOL)
+    with open(prefix + '_test_ix_' + consts.USER_SONG_DICT, 'wb') as file:
+        pickle.dump(test_user_song, file, protocol=pickle.HIGHEST_PROTOCOL)
+    with open(prefix + '_train_ix_' + consts.SONG_USER_DICT, 'wb') as file:
+        pickle.dump(train_song_user, file, protocol=pickle.HIGHEST_PROTOCOL)
+    with open(prefix + '_test_ix_' + consts.SONG_USER_DICT, 'wb') as file:
+        pickle.dump(test_song_user, file, protocol=pickle.HIGHEST_PROTOCOL)
+
+
 def makedir(dir):
     try:
         os.mkdir(dir)
@@ -356,15 +392,16 @@ makedir(consts.DATA_DIR)
 
 print("Building KG...")
 # the number of file in song_data dir < 4, it should be reproduced network
-if len(os.listdir(consts.DATA_DIR)) < 4:
-    prepare_song_data()
+prepare_song_data()
 
 print("Building Subnetwork...")
 # the number of file in song_data dir < 4, it should be reproduced subnetwork
-if len(os.listdir(consts.DATA_DIR)) < 8:
-    find_subnetwork()
+find_subnetwork()
 
 makedir(consts.IX_MAPPING_DIR)
 makedir(consts.IX_DATA_DIR)
 print("Mapping id from zero...")
 ix_mapping()
+
+print("Spliting training data and test data...")
+train_test_split()

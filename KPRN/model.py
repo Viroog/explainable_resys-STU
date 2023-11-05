@@ -56,9 +56,6 @@ class KPRN(nn.Module):
 
         return interactions_path_plausibility
 
-    def eval(self):
-        pass
-
     def weighted_pooling(self, interaction_path_plausibility):
 
         weighted_out = torch.div(interaction_path_plausibility, self.gamma)

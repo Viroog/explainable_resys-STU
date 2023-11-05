@@ -26,6 +26,17 @@ class TrainInteractionData(Dataset):
         return self.interaction_nums
 
 
+class TestInteractionData(Dataset):
+    def __init__(self, test_interaction):
+        self.data = test_interaction
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+    def __len__(self):
+        return len(self.data)
+
+
 # dataloader按照batch进行读取数据时，是取出大小为batch size的index列表，然后将index列表输入到dataset中(即TrainInteractionData类)的getitem方法中
 # 取出对应index的数据，然后进行堆叠，形成一个batch的数据
 # 因为我们的数据每一行是一个元组，(paths, label)，客制化定义my_collate函数

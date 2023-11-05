@@ -1,19 +1,21 @@
 import argparse
+import mmap
 import os.path
 import pickle
 import random
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import torch.optim as optim
 
 import consts as consts
-from data.dataloader import TrainInteractionData, my_collate, sort_batch
+from data.dataloader import TrainInteractionData, my_collate, sort_batch, TestInteractionData
 from format import format_path
 from model import KPRN
 from path_extraction import find_paths_user_to_songs
+from evaluation import ndcg, hit
 
 random.seed(1)
 
@@ -26,7 +28,7 @@ argparse.add_argument('--relation_embedding_dim', type=int, default=32)
 argparse.add_argument('--entity_embedding_dim', type=int, default=64)
 argparse.add_argument('--lstm_hidden_dim', type=int, default=256)
 
-argparse.add_argument('--epochs', type=int, default=200)
+argparse.add_argument('--epochs', type=int, default=30)
 argparse.add_argument('--batch_size', type=int, default=256)
 argparse.add_argument('--lr', type=float, default=0.002)
 argparse.add_argument('--l2_reg', type=float, default=0.0001)
@@ -38,9 +40,9 @@ argparse.add_argument('--samples', type=int, default=-1,
                       help='number of paths to sample for each interaction(-1 means all paths)')
 
 argparse.add_argument('--device', type=str, default='cuda:0' if torch.cuda.is_available() else 'cpu')
-argparse.add_argument('--mode', type=str, default='train', choices=['train', 'eval'])
+argparse.add_argument('--mode', type=str, default='eval', choices=['train', 'eval'])
 
-argparse.add_argument('--kg_path_file', type=str, default='train_inters_standard_100.txt')
+argparse.add_argument('--kg_path_file', type=str, default='test_inters_standard_100.txt')
 argparse.add_argument('--model_path', type=str, default='kprn.pth')
 argparse.add_argument('--find_path', type=bool, default=False)
 
@@ -59,6 +61,15 @@ def sample_paths(paths, samples):
     random.shuffle(index_list)
     indices = index_list[:samples]
     return [paths[i] for i in indices]
+
+
+def get_num_lines(file_path):
+    fp = open(file_path, "r+")
+    buf = mmap.mmap(fp.fileno(), 0)
+    lines = 0
+    while buf.readline():
+        lines += 1
+    return lines
 
 
 # the file in song_ix_mapping with name x_x_to_ix.dict
@@ -119,7 +130,7 @@ def load_data(song_person, person_song, all_user_song, all_song_user, train_user
                     song_to_paths_len5 = find_paths_user_to_songs(user, song_person, person_song, train_song_user,
                                                                   train_user_song, 5, len_5_branch)
                 # eval
-                else:
+                elif version == 'eval':
                     song_to_paths = find_paths_user_to_songs(user, song_person, person_song, all_song_user,
                                                              all_user_song, 3, len_3_branch)
                     song_to_paths_len5 = find_paths_user_to_songs(user, song_person, person_song, all_song_user,
@@ -196,12 +207,12 @@ def load_data(song_person, person_song, all_user_song, all_song_user, train_user
     write_file.close()
 
 
+# load data
+type_to_ix, relation_to_ix, entity_to_ix = load_string_to_ix_dicts()
+song_person, person_song, song_user, user_song = load_song_ix_data()
+
 # need train
 if args.mode == 'train' or (args.mode == 'eval' and os.path.exists(args.model_path) is False):
-
-    # load data
-    type_to_ix, relation_to_ix, entity_to_ix = load_string_to_ix_dicts()
-    song_person, person_song, song_user, user_song = load_song_ix_data()
 
     print('Finding paths...')
 
@@ -224,9 +235,11 @@ if args.mode == 'train' or (args.mode == 'eval' and os.path.exists(args.model_pa
     # create model and put it on device(cuda/cpu)
     kprn = KPRN(args.type_embedding_dim, args.relation_embedding_dim, args.entity_embedding_dim, args.lstm_hidden_dim,
                 len(type_to_ix), len(relation_to_ix), len(entity_to_ix), args.gamma).to(args.device)
+
     optimizer = optim.Adam(kprn.parameters(), lr=args.lr, weight_decay=args.l2_reg)
     criterion = nn.NLLLoss()
 
+    kprn.train()
     for epoch in range(args.epochs):
         total_loss = 0
         for interaction_batch, targets in tqdm(dataloader):
@@ -277,8 +290,87 @@ if args.mode == 'train' or (args.mode == 'eval' and os.path.exists(args.model_pa
 
             total_loss += loss.item()
 
-        print(f"epoch: {epoch}, loss: {total_loss / len(dataloader)}")
+        print(f"epoch: {epoch + 1}, loss: {total_loss / len(dataloader)}")
 
+    torch.save(kprn, args.model_path)
 # eval and load model directly
 else:
-    kprn = torch.load(args.model_path)
+    kprn = torch.load(args.model_path).to(args.device)
+    kprn.eval()
+
+    if args.find_path:
+        prefix = 'data/' + consts.IX_DATA_DIR + '/' + args.subnetwork_type + '_test_ix_'
+        with open(prefix + consts.SONG_USER_DICT, 'rb') as file:
+            test_song_user = pickle.load(file)
+
+        with open(prefix + consts.USER_SONG_DICT, 'rb') as file:
+            test_user_song = pickle.load(file)
+
+        load_data(song_person, person_song, user_song, song_user, test_user_song, test_song_user,
+                  consts.NEG_SAMPLES_EVAL, entity_to_ix, type_to_ix, relation_to_ix, args.kg_path_file,
+                  consts.LEN_3_BRANCH, consts.LEN_5_BRANCH_EVAL, limit=args.user_limit, version='eval',
+                  samples=args.samples)
+
+    prefix = 'data/' + consts.PATH_DATA_DIR + '/'
+
+    ndcgs, hits = [], []
+
+    with open(prefix + args.kg_path_file, 'r') as file:
+        for line in tqdm(file, total=get_num_lines(prefix + args.kg_path_file)):
+            # 这里的interaction_data指的是101条数据，即100个负样本+1一个正样本
+            test_interaction = eval(line.strip('\n'))
+
+            interation_data = TestInteractionData(test_interaction)
+            dataloader = DataLoader(dataset=interation_data, collate_fn=my_collate, batch_size=args.batch_size,
+                                    shuffle=False)
+
+            with torch.no_grad():
+                for interation_batch, targets in dataloader:
+                    paths, lengths, inter_ids = [], [], []
+                    for inter_id, inter_paths in enumerate(interation_batch):
+                        for path, length in inter_paths:
+                            paths.append(path)
+                            lengths.append(length)
+                        inter_ids.extend([inter_id for _ in range(len(inter_paths))])
+
+                    paths = torch.LongTensor(paths)
+                    lengths = torch.LongTensor(lengths)
+                    inter_ids = torch.LongTensor(inter_ids)
+
+                    s_path_batch, s_inter_ids, s_lengths = sort_batch(paths, inter_ids, lengths)
+
+                    interactions_path_plausibility = kprn(s_path_batch.to(args.device), s_lengths)
+
+                    first = True
+                    for i in range(len(interation_batch)):
+                        masks = s_inter_ids == i
+
+                        pool_score = kprn.weighted_pooling(interactions_path_plausibility[masks])
+
+                        if first:
+                            pool_scores = pool_score.unsqueeze(0)
+                            first = False
+                        else:
+                            pool_scores = torch.cat([pool_scores, pool_score.unsqueeze(0)], dim=0)
+
+                    # 101个样本的预测分数
+                    pool_scores = torch.softmax(pool_scores, dim=1)
+
+                    # 取出维度为1的预测分数
+                    pos_scores = []
+                    for pool_score in pool_scores:
+                        pos_scores.append(pool_score[1].item())
+
+            targets = [x[1] for x in test_interaction]
+
+            score_target = list(zip(pos_scores, targets))
+            sorted_score_target = sorted(score_target, key=lambda x: x[0], reverse=True)
+
+            k = 10
+            ndcgs.append(ndcg(sorted_score_target, k))
+            hits.append(hit(sorted_score_target, k))
+
+    print(f"NDCG@{k}: {sum(ndcgs) / len(ndcgs)}, HIT@{k}: {sum(hits) / len(hits)}")
+
+
+

@@ -50,7 +50,7 @@ def find_paths_user_to_songs(start_user, song_person, person_song, song_user, us
 
         # the type of dealing node is user
         # if type == consts.USER_TYPE and entity in user_song.keys() (user can not in user_song? I think it must in user_song, if can't, modifing it)
-        if type == consts.USER_TYPE:
+        if entity_type == consts.USER_TYPE:
             song_list = user_song[entity]
             index_list = get_random_index(sample_nums, len(song_list))
             for index in index_list:
@@ -65,7 +65,7 @@ def find_paths_user_to_songs(start_user, song_person, person_song, song_user, us
                     stack.append(new_state)
 
         # the type of dealing node is song(song can from user and person, can in user/person but not in person/user)
-        elif type == consts.SONG_TYPE:
+        elif entity_type == consts.SONG_TYPE:
             if entity in song_user:
                 user_list = song_user[entity]
                 index_list = get_random_index(sample_nums, len(user_list))

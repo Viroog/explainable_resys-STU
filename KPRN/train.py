@@ -4,10 +4,13 @@ import pickle
 import random
 
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 import torch.optim as optim
 
 import consts as consts
+from data.dataloader import TrainInteractionData, my_collate, sort_batch
 from format import format_path
 from model import KPRN
 from path_extraction import find_paths_user_to_songs
@@ -16,7 +19,8 @@ random.seed(1)
 
 argparse = argparse.ArgumentParser(description='Model Parameters')
 
-argparse.add_argument('--subnetwork_type', type=str, default='standard', choices=['dense', 'standard', 'sparse', 'full'])
+argparse.add_argument('--subnetwork_type', type=str, default='standard',
+                      choices=['dense', 'standard', 'sparse', 'full'])
 argparse.add_argument('--type_embedding_dim', type=int, default=32)
 argparse.add_argument('--relation_embedding_dim', type=int, default=32)
 argparse.add_argument('--entity_embedding_dim', type=int, default=64)
@@ -36,8 +40,9 @@ argparse.add_argument('--samples', type=int, default=-1,
 argparse.add_argument('--device', type=str, default='cuda:0' if torch.cuda.is_available() else 'cpu')
 argparse.add_argument('--mode', type=str, default='train', choices=['train', 'eval'])
 
-argparse.add_argument('--kg_path_file', type=str, default='interactions.txt')
+argparse.add_argument('--kg_path_file', type=str, default='train_inters_standard_100.txt')
 argparse.add_argument('--model_path', type=str, default='kprn.pth')
+argparse.add_argument('--find_path', type=bool, default=False)
 
 args = argparse.parse_args()
 
@@ -165,19 +170,17 @@ def load_data(song_person, person_song, all_user_song, all_song_user, train_user
                 neg_song = top_neg_songs[cur_idx]
                 neg_paths = song_to_paths[neg_song]
 
-                if len(neg_paths) > 0:
-                    if samples != -1:
-                        neg_paths = sample_paths(neg_paths, samples)
-                    interaction = (format_path(neg_paths, entity_to_ix, type_to_ix, relation_to_ix), 0)
+                if samples != -1:
+                    neg_paths = sample_paths(neg_paths, samples)
+                interaction = (format_path(neg_paths, entity_to_ix, type_to_ix, relation_to_ix), 0)
+                if version == 'train':
+                    write_file.write(repr(interaction) + '\n')
+                elif version == 'eval':
+                    interactions.append(interaction)
 
-                    if version == 'train':
-                        write_file.write(repr(interaction) + '\n')
-                    elif version == 'eval':
-                        interactions.append(interaction)
-
-                    avg_neg_path_nums += len(neg_paths)
-                    neg_interactions_nums += 1
-                    cur_idx += 1
+                avg_neg_path_nums += len(neg_paths)
+                neg_interactions_nums += 1
+                cur_idx += 1
 
             if found_all_samples and version == 'eval':
                 write_file.write(repr(interactions) + '\n')
@@ -202,26 +205,79 @@ if args.mode == 'train' or (args.mode == 'eval' and os.path.exists(args.model_pa
 
     print('Finding paths...')
 
-    # training data
-    prefix = 'data/' + consts.IX_DATA_DIR + '/' + args.subnetwork_type + '_train_ix_'
-    with open(prefix + consts.USER_SONG_DICT, 'rb') as file:
-        train_user_song = pickle.load(file)
-    with open(prefix + consts.SONG_USER_DICT, 'rb') as file:
-        train_song_user = pickle.load(file)
+    if args.find_path:
+        # training data
+        prefix = 'data/' + consts.IX_DATA_DIR + '/' + args.subnetwork_type + '_train_ix_'
+        with open(prefix + consts.USER_SONG_DICT, 'rb') as file:
+            train_user_song = pickle.load(file)
+        with open(prefix + consts.SONG_USER_DICT, 'rb') as file:
+            train_song_user = pickle.load(file)
 
-    load_data(song_person, person_song, user_song, song_user, train_user_song, train_song_user,
-              consts.NEG_SAMPLES_TRAIN, entity_to_ix, type_to_ix, relation_to_ix, args.kg_path_file,
-              consts.LEN_3_BRANCH, consts.LEN_5_BRANCH_TRAIN, limit=args.user_limit, version='train',
-              samples=args.samples)
+        load_data(song_person, person_song, user_song, song_user, train_user_song, train_song_user,
+                  consts.NEG_SAMPLES_TRAIN, entity_to_ix, type_to_ix, relation_to_ix, args.kg_path_file,
+                  consts.LEN_3_BRANCH, consts.LEN_5_BRANCH_TRAIN, limit=args.user_limit, version='train',
+                  samples=args.samples)
+
+    interaction_data = TrainInteractionData(args.kg_path_file)
+    dataloader = DataLoader(dataset=interaction_data, collate_fn=my_collate, batch_size=args.batch_size, shuffle=True)
 
     # create model and put it on device(cuda/cpu)
-    kprn = KPRN().to(args.device)
-
+    kprn = KPRN(args.type_embedding_dim, args.relation_embedding_dim, args.entity_embedding_dim, args.lstm_hidden_dim,
+                len(type_to_ix), len(relation_to_ix), len(entity_to_ix), args.gamma).to(args.device)
     optimizer = optim.Adam(kprn.parameters(), lr=args.lr, weight_decay=args.l2_reg)
-    for epoch in range(args.epochs):
-        kprn()
+    criterion = nn.NLLLoss()
 
-        optimizer.zero_grad()
+    for epoch in range(args.epochs):
+        total_loss = 0
+        for interaction_batch, targets in tqdm(dataloader):
+            # to store the data in batch to be sorted
+            paths, lengths, inter_ids = [], [], []
+            for inter_id, inter_paths in enumerate(interaction_batch):
+                for path, length in inter_paths:
+                    paths.append(path)
+                    lengths.append(length)
+                inter_ids.extend([inter_id for i in range(len(inter_paths))])
+
+            paths = torch.LongTensor(paths)
+            lengths = torch.LongTensor(lengths)
+            inter_ids = torch.LongTensor(inter_ids)
+
+            # why need to sort?
+            # in model, it uses "pack_padded_sequence" and its parameter enforce_sorted is True, mean the sequence length should be from large to small
+            s_path_batch, s_inter_ids, s_lengths = sort_batch(paths, inter_ids, lengths)
+
+            interactions_path_plausibility = kprn(s_path_batch.to(args.device), s_lengths)
+
+            first = True
+            # i is the index of row of data in batch, which is a set of paths from user to song
+            # the dimension 0 of output is the num of total paths in one batch, this step is to find the paths that from the same row data
+            for i in range(len(interaction_batch)):
+                masks = s_inter_ids == i
+
+                # shape: (2, )
+                pool_score = kprn.weighted_pooling(interactions_path_plausibility[masks])
+
+                # pool_scores: (batch_size, 2)
+                if first:
+                    # the shape of NLLLoss input should be (N, C) where C is the number of classes
+                    # chang it to 2 dimension
+                    pool_scores = pool_score.unsqueeze(0)
+                    first = False
+                else:
+                    pool_scores = torch.cat([pool_scores, pool_score.unsqueeze(0)], dim=0)
+
+            # (batch_size, 2)
+            predict = torch.log_softmax(pool_scores, dim=1)
+
+            optimizer.zero_grad()
+            loss = criterion(predict.to(args.device), targets.to(args.device))
+
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        print(f"epoch: {epoch}, loss: {total_loss / len(dataloader)}")
 
 # eval and load model directly
 else:

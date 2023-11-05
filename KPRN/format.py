@@ -7,7 +7,6 @@ def format_path(pos_paths, entity_to_ix, type_to_ix, relation_to_ix):
     for path in pos_paths:
         path_len =len(path)
         pad_path(path, entity_to_ix, type_to_ix, relation_to_ix, consts.MAX_PATH_LEN, consts.PAD_TOKEN)
-        print(path_len, len(path))
         new_paths.append((path, path_len))
 
     return new_paths

@@ -1,1 +1,1 @@
-meta-path相关，有点难以理解
+这一篇论文中提到了sequentially model，可能和我的毕设相关性更大一点

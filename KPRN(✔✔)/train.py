@@ -240,8 +240,12 @@ if args.mode == 'train' or (args.mode == 'eval' and os.path.exists(args.model_pa
     criterion = nn.NLLLoss()
 
     kprn.train()
+    # each epoch sample training data according to the TransH distance calculate again
     for epoch in range(args.epochs):
         total_loss = 0
+
+
+
         for interaction_batch, targets in tqdm(dataloader):
             # to store the data in batch to be sorted
             paths, lengths, inter_ids = [], [], []
